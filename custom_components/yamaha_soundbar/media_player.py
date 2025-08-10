@@ -28,6 +28,8 @@ from async_upnp_client.client_factory import UpnpFactory
 from async_upnp_client.aiohttp import AiohttpRequester
 import xml.etree.ElementTree as ET
 
+
+from xml.etree.ElementTree import ParseError
 import re
 import struct
 import chardet
@@ -2678,7 +2680,12 @@ class YamahaDevice(MediaPlayerEntity):
         except:
             _LOGGER.warning("GetMediaInfo/CurrentURIMetaData UPNP error: %s", self.entity_id)
 
-        if media_metadata is None:
+        if not media_metadata or not isinstance(media_metadata, str):
+            _LOGGER.debug("UPnP: media_metadata assente/non stringa per %s", self.entity_id)
+            return
+
+        if not media_metadata.strip().startswith("<"):
+            _LOGGER.debug("UPnP: media_metadata non sembra XML per %s: %r", self.entity_id, media_metadata[:120])
             return
 
         self._media_title = None
@@ -2686,7 +2693,11 @@ class YamahaDevice(MediaPlayerEntity):
         self._media_artist = None
         self._media_image_url = None
 
-        xml_tree = ET.fromstring(media_metadata)
+        try:
+            xml_tree = ET.fromstring(media_metadata)
+        except ParseError as exc:
+            _LOGGER.debug("UPnP: XML malformato in media_metadata per %s: %s", self.entity_id, exc)
+            return
 
         xml_path = "{urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/}item/"
         title_xml_path = "{http://purl.org/dc/elements/1.1/}title"
@@ -2702,15 +2713,22 @@ class YamahaDevice(MediaPlayerEntity):
                 self._media_artist = string.capwords(titles[0].strip())
                 self._media_title = string.capwords(titles[1].strip())
             else:
-                self._media_title = string.capwords(title.strip())
+                self._media_title = string.capwords(title.strip()) if title else None
         else:
-            self._media_title = xml_tree.find("{0}{1}".format(xml_path, title_xml_path)).text
-            self._media_artist = xml_tree.find("{0}{1}".format(xml_path, artist_xml_path)).text
-            self._media_album = xml_tree.find("{0}{1}".format(xml_path, album_xml_path)).text
+            t_el = xml_tree.find(f"{xml_path}{title_xml_path}")
+            self._media_title = t_el.text if t_el is not None else None
+            a_el = xml_tree.find(f"{xml_path}{artist_xml_path}")
+            self._media_artist = a_el.text if a_el is not None else None
+            al_el = xml_tree.find(f"{xml_path}{album_xml_path}")
+            self._media_album = al_el.text if al_el is not None else None
 
-        self._media_image_url = xml_tree.find("{0}{1}".format(xml_path, image_xml_path)).text
+        img_el = xml_tree.find(f"{xml_path}{image_xml_path}")
+        self._media_image_url = img_el.text if img_el is not None else None
 
-        if not validators.url(self._media_image_url):
+        try:
+            if not self._media_image_url or not validators.url(self._media_image_url):
+                self._media_image_url = None
+        except Exception:
             self._media_image_url = None
 
     async def async_tracklist_via_upnp(self, media):
@@ -2738,10 +2756,19 @@ class YamahaDevice(MediaPlayerEntity):
         except:
             _LOGGER.debug("PlayQueue/QueueContext UPNP error, media not present?: %s", self.entity_id)
 
-        if media_metadata is None:
+        if not media_metadata or not isinstance(media_metadata, str):
+            _LOGGER.debug("UPnP: media_metadata assente/non stringa per %s", self.entity_id)
             return
 
-        xml_tree = ET.fromstring(media_metadata)
+        if not media_metadata.strip().startswith("<"):
+            _LOGGER.debug("UPnP: media_metadata non sembra XML per %s: %r", self.entity_id, media_metadata[:120])
+            return
+
+        try:
+            xml_tree = ET.fromstring(media_metadata)
+        except ParseError as exc:
+            _LOGGER.debug("UPnP: XML malformato in media_metadata per %s: %s", self.entity_id, exc)
+            return
 
         trackq = []
         for playlist in xml_tree:
@@ -2782,7 +2809,14 @@ class YamahaDevice(MediaPlayerEntity):
             _LOGGER.debug("GetKeyMapping UPNP error: %s", self.entity_id)
             return
 
-        xml_tree = ET.fromstring(preset_map)
+        if not preset_map or not isinstance(preset_map, str) or not preset_map.strip().startswith("<"):
+            _LOGGER.error("Preset Map non valido per %s: %r", self.entity_id, str(preset_map)[:120])
+            return
+        try:
+            xml_tree = ET.fromstring(preset_map)
+        except ParseError as exc:
+            _LOGGER.error("Preset Map XML malformato per %s: %s", self.entity_id, exc)
+            return
 
         if xml_tree.find('Key'+presetnum) is None:
             _LOGGER.error("Preset Map error: %s num: %s. Please create a Spotify preset first with the mobile app for this player. Tree: %s", self.entity_id, presetnum, preset_map)
